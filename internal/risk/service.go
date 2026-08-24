@@ -83,20 +83,22 @@ func (s *Service) SubmitFatigue(ctx context.Context, actor domain.User, report d
 
 func (s *Service) Acknowledge(ctx context.Context, actor domain.User, riskID, expectedVersion int64) (domain.RiskCase, error) {
 	now := s.clock.Now()
-	riskCase, err := s.store.RiskByID(ctx, riskID)
-	if err != nil {
-		return domain.RiskCase{}, err
-	}
-	if riskCase.Version != expectedVersion {
-		return domain.RiskCase{}, domain.ErrVersionConflict
-	}
-	if err = riskCase.Acknowledge(actor, now); err != nil {
-		return domain.RiskCase{}, err
-	}
-	if err = s.store.UpdateRisk(ctx, riskCase, expectedVersion); err != nil {
-		return domain.RiskCase{}, err
-	}
-	err = s.store.WithTx(ctx, func(tx *store.Tx) error {
+	var riskCase domain.RiskCase
+	err := s.store.WithTx(ctx, func(tx *store.Tx) error {
+		var err error
+		riskCase, err = tx.RiskByID(ctx, riskID)
+		if err != nil {
+			return err
+		}
+		if riskCase.Version != expectedVersion {
+			return domain.ErrVersionConflict
+		}
+		if err = riskCase.Acknowledge(actor, now); err != nil {
+			return err
+		}
+		if err = tx.UpdateRisk(ctx, riskCase, expectedVersion); err != nil {
+			return err
+		}
 		_, err = tx.InsertAudit(ctx, domain.AuditEvent{ActorID: actor.ID, Action: "risk.acknowledge",
 			ObjectType: "risk_case", ObjectID: riskCase.ID, Outcome: "success", Basis: riskCase.Basis,
 			RequestID: audit.RequestID(ctx), Metadata: `{}`, CreatedAt: now})
