@@ -119,6 +119,25 @@ func TestTransactionHonorsCanceledContext(t *testing.T) {
 	}
 }
 
+func TestTransactionRollsBackWhenClientCancelsAfterWork(t *testing.T) {
+	database := openTestStore(t)
+	now := time.Now().UTC()
+	ctx, cancel := context.WithCancel(t.Context())
+	err := database.WithTx(ctx, func(tx *Tx) error {
+		if _, err := tx.CreateUser(t.Context(), testUser(domain.RoleStudent, "cancel-after-write@store.test", now)); err != nil {
+			return err
+		}
+		cancel() // client abandoned the request after the write, before commit
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("WithTx error = %v, want context.Canceled", err)
+	}
+	if _, err := database.UserByEmail(t.Context(), "cancel-after-write@store.test"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("cancelled-then-committed user lookup = %v, want ErrNotFound", err)
+	}
+}
+
 func TestUserEmailUniquenessAndSessionRevocation(t *testing.T) {
 	database := openTestStore(t)
 	now := time.Now().UTC()

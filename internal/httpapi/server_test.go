@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -249,5 +251,71 @@ func TestAuditEndpointRequiresProfessionalRole(t *testing.T) {
 	response, payload := fixture.request(http.MethodGet, "/v1/audit/athlete/1", login.Token, "audit-denied", nil)
 	if response.StatusCode != http.StatusForbidden {
 		t.Fatalf("student audit status=%d body=%s", response.StatusCode, payload)
+	}
+}
+
+func TestCancelledWriteRequestDoesNotReturnSuccessStatus(t *testing.T) {
+	fixture := newAPIFixture(t)
+
+	// Submit a screening against an already-cancelled request context so that
+	// WithTx returns context.Canceled before any commit. The handler must not
+	// surface a 2xx; writeError maps the cancellation to 499 client_closed.
+	athlete, err := fixture.auth.Register(t.Context(), "cancel-student@http.test", "Cancel Student", "strong-password", domain.RoleStudent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guardian, err := fixture.auth.Register(t.Context(), "cancel-guardian@http.test", "Cancel Guardian", "strong-password", domain.RoleGuardian)
+	if err != nil {
+		t.Fatal(err)
+	}
+	advisor := fixture.advisor
+	var athleteRow domain.Athlete
+	if err = fixture.store.WithTx(t.Context(), func(tx *store.Tx) error {
+		athleteRow, err = tx.CreateAthlete(t.Context(), domain.Athlete{
+			StudentUserID: athlete.ID, GuardianUserID: guardian.ID, AdvisorUserID: &advisor.ID,
+			BirthDate: fixture.now.Now().AddDate(-14, 0, 0), Timezone: "UTC", Status: domain.AthleteActive,
+			Version: 1, CreatedAt: fixture.now.Now(), UpdatedAt: fixture.now.Now(),
+		})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	studentLogin, err := fixture.auth.Login(t.Context(), "cancel-student@http.test", "strong-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := map[string]any{"answers": map[string]any{"q1": "no"}, "risk_flag": false}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("/v1/athletes/%d/screenings", athleteRow.ID), bytes.NewReader(encoded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+studentLogin.Token)
+	req.Header.Set("X-Request-ID", "cancel-1")
+
+	recorder := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(recorder, req)
+	response := recorder.Result()
+	payload, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode < 400 {
+		t.Fatalf("cancelled write returned success status=%d body=%s", response.StatusCode, payload)
+	}
+	var result errorBody
+	if err = json.Unmarshal(payload, &result); err != nil {
+		t.Fatalf("decode error body: %v (payload=%s)", err, payload)
+	}
+	if result.Error.Code != "client_closed" || result.Error.RequestID != "cancel-1" {
+		t.Fatalf("cancelled write error = %+v", result)
 	}
 }

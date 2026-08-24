@@ -85,8 +85,7 @@ func (s *Store) WithTx(ctx context.Context, fn func(*Tx) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	txCtx := transactionCommitContext(ctx)
-	tx, err := s.db.BeginTx(txCtx, nil)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
@@ -97,8 +96,10 @@ func (s *Store) WithTx(ctx context.Context, fn func(*Tx) error) error {
 		}
 		return err
 	}
-	commitCtx := transactionCommitContext(ctx)
-	if err = commitCtx.Err(); err != nil {
+	// Bind the commit to the request lifecycle: if the caller abandoned the
+	// request (cancellation or deadline) after the body succeeded but before
+	// commit, roll back so no committed state survives a cancelled request.
+	if err = ctx.Err(); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
@@ -106,14 +107,6 @@ func (s *Store) WithTx(ctx context.Context, fn func(*Tx) error) error {
 		return fmt.Errorf("commit transaction: %w", err)
 	}
 	return nil
-}
-
-func transactionCommitContext(requestCtx context.Context) context.Context {
-	commitCtx := context.WithoutCancel(requestCtx)
-	if deadline, ok := requestCtx.Deadline(); ok {
-		commitCtx, _ = context.WithDeadline(commitCtx, deadline)
-	}
-	return commitCtx
 }
 
 func (t *Tx) Executor() Executor { return t.tx }

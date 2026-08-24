@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -8,6 +9,11 @@ import (
 	"github.com/11DingKing/youth-training-load-ledger/internal/audit"
 	"github.com/11DingKing/youth-training-load-ledger/internal/domain"
 )
+
+// statusClientClosedRequest signals that the client gave up before the response
+// could be written. It mirrors nginx's 499 so callers can distinguish an
+// abandoned request from a real server failure.
+const statusClientClosedRequest = 499
 
 type errorBody struct {
 	Error APIError `json:"error"`
@@ -20,6 +26,16 @@ type APIError struct {
 }
 
 func writeError(w http.ResponseWriter, r *http.Request, err error) {
+	// If the caller abandoned the request, do not surface a success status.
+	// WithTx rolls back on cancellation, so no committed state survives the
+	// disconnect; emit a non-standard 499 instead of a 2xx.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		writeJSON(w, statusClientClosedRequest, errorBody{Error: APIError{
+			Code: "client_closed", Message: "request was cancelled before completion",
+			RequestID: audit.RequestID(r.Context()),
+		}})
+		return
+	}
 	status, code, message := http.StatusInternalServerError, "internal_error", "internal server error"
 	switch {
 	case errors.Is(err, domain.ErrUnauthorized), errors.Is(err, domain.ErrExpired), errors.Is(err, domain.ErrRevoked):
