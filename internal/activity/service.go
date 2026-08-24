@@ -159,13 +159,11 @@ func (s *Service) Record(ctx context.Context, actor domain.User, input RecordInp
 				return err
 			}
 		}
-		return nil
-	})
-	if err == nil && !result.Replayed {
-		_, err = s.store.InsertAudit(ctx, domain.AuditEvent{ActorID: actor.ID, Action: "activity.record",
+		_, err = tx.InsertAudit(ctx, domain.AuditEvent{ActorID: actor.ID, Action: "activity.record",
 			ObjectType: "activity", ObjectID: activity.ID, Outcome: "success", RequestID: audit.RequestID(ctx),
 			Metadata:  fmt.Sprintf(`{"athlete_id":%d,"load":%d,"late":%t}`, input.AthleteID, activity.LoadUnits, activity.LateEntry),
 			CreatedAt: now})
-	}
+		return err
+	})
 	return result, err
 }
