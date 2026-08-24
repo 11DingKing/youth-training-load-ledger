@@ -107,11 +107,10 @@ func (s *Store) SessionUser(ctx context.Context, tokenHash string) (domain.Sessi
 }
 
 func (s *Store) SessionUserForAuthentication(ctx context.Context, tokenHash string) (domain.Session, domain.User, error) {
-	queryCtx := context.WithoutCancel(ctx)
-	if err := queryCtx.Err(); err != nil {
+	if err := ctx.Err(); err != nil {
 		return domain.Session{}, domain.User{}, err
 	}
-	return s.SessionUser(queryCtx, tokenHash)
+	return s.SessionUser(ctx, tokenHash)
 }
 
 func (s *Store) RevokeSession(ctx context.Context, tokenHash string, at time.Time) error {

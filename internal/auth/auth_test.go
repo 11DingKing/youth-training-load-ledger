@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -141,6 +142,25 @@ func TestServiceExpiresAndPurgesSession(t *testing.T) {
 	count, err := service.PurgeExpired(t.Context())
 	if err != nil || count != 1 {
 		t.Fatalf("PurgeExpired = %d, %v", count, err)
+	}
+}
+
+func TestAuthenticateAbortsWhenClientDisconnectsBeforeLookup(t *testing.T) {
+	database := openAuthStore(t)
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	fixed := clock.NewFixed(now)
+	service := NewService(database, fixed, time.Hour)
+	if _, err := service.Register(t.Context(), "student@example.test", "Student", "strong-password", domain.RoleStudent); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Login(t.Context(), "student@example.test", "strong-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err = service.Authenticate(ctx, result.Token); !errors.Is(err, context.Canceled) {
+		t.Fatalf("authenticate with canceled request = %v, want %v", err, context.Canceled)
 	}
 }
 
