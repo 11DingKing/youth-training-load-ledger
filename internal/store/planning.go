@@ -126,8 +126,16 @@ func prescriptionByID(ctx context.Context, exec Executor, id int64) (domain.Pres
 }
 
 func (t *Tx) PublishedPrescription(ctx context.Context, athleteID int64, weekStart any) (domain.Prescription, error) {
+	return publishedPrescription(ctx, t.tx, athleteID, weekStart)
+}
+
+func (s *Store) PublishedPrescription(ctx context.Context, athleteID int64, weekStart any) (domain.Prescription, error) {
+	return publishedPrescription(ctx, s.db, athleteID, weekStart)
+}
+
+func publishedPrescription(ctx context.Context, exec Executor, athleteID int64, weekStart any) (domain.Prescription, error) {
 	var p domain.Prescription
-	err := t.tx.QueryRowContext(ctx, `SELECT id, athlete_id, author_user_id, week_start, version, status,
+	err := exec.QueryRowContext(ctx, `SELECT id, athlete_id, author_user_id, week_start, version, status,
         weekly_load_limit, max_session_load, min_recovery_hours, strength_days, basis, published_at,
         superseded_at, created_at FROM prescriptions WHERE athlete_id = ? AND week_start = ? AND status = 'published'`,
 		athleteID, weekStart).Scan(&p.ID, &p.AthleteID, &p.AuthorUserID, &p.WeekStart, &p.Version,
@@ -141,19 +149,27 @@ func (t *Tx) PublishedPrescription(ctx context.Context, athleteID int64, weekSta
 
 func (s *Store) SupersedePublishedPrescription(ctx context.Context, athleteID int64, weekStart any, at time.Time) error {
 	return s.WithTx(ctx, func(tx *Tx) error {
-		current, err := tx.PublishedPrescription(ctx, athleteID, weekStart)
-		if errors.Is(err, domain.ErrNotFound) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		expectedVersion := current.Version
-		if err = current.Supersede(at); err != nil {
-			return err
-		}
-		return tx.UpdatePrescription(ctx, current, expectedVersion)
+		return tx.SupersedePublishedPrescription(ctx, athleteID, weekStart, at)
 	})
+}
+
+// SupersedePublishedPrescription retires the currently published prescription for
+// the given training week so a new draft can be published in its place. It runs
+// within the caller's transaction so a failed publish rolls the supersede back
+// and never leaves the week without an executable prescription.
+func (t *Tx) SupersedePublishedPrescription(ctx context.Context, athleteID int64, weekStart any, at time.Time) error {
+	current, err := t.PublishedPrescription(ctx, athleteID, weekStart)
+	if errors.Is(err, domain.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	expectedVersion := current.Version
+	if err = current.Supersede(at); err != nil {
+		return err
+	}
+	return t.UpdatePrescription(ctx, current, expectedVersion)
 }
 
 func (t *Tx) UpdatePrescription(ctx context.Context, prescription domain.Prescription, expectedVersion int64) error {

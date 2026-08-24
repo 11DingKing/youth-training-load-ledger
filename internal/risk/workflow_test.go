@@ -289,3 +289,44 @@ func TestProfessionalPermissionsAndVersionConflicts(t *testing.T) {
 		t.Fatalf("guardian activity error = %v", err)
 	}
 }
+
+// TestStalePublishLeavesActivePrescriptionIntact guards against a regression
+// where a supersede committed in its own transaction before the version check,
+// so a stale publish retired the active prescription without publishing a
+// replacement and left the week with no executable prescription.
+func TestStalePublishLeavesActivePrescriptionIntact(t *testing.T) {
+	f := newWorkflowFixture(t)
+	f.prepareActiveAthlete()
+	ctx := audit.WithRequestID(t.Context(), "stale-publish")
+	// The active prescription was published at version 2; reporting the stale
+	// version 1 must conflict without retiring the published one.
+	if _, err := f.planning.PublishPrescription(ctx, f.coach, f.prescription.ID, 1); !errors.Is(err, domain.ErrVersionConflict) {
+		t.Fatalf("stale publish error = %v", err)
+	}
+	published, err := f.database.PublishedPrescription(ctx, f.athlete.ID, f.prescription.WeekStart)
+	if err != nil {
+		t.Fatalf("published prescription after stale publish = %v", err)
+	}
+	if published.ID != f.prescription.ID || published.Status != domain.PrescriptionPublished {
+		t.Fatalf("active prescription was retired by a failed publish: %+v", published)
+	}
+	// The failed publish left no half-state: a new draft for the same week can
+	// still be created and published, superseding the original atomically.
+	draft, err := f.planning.CreatePrescription(ctx, f.coach, planningservice.PrescriptionInput{
+		AthleteID: f.athlete.ID, WeekStart: f.prescription.WeekStart, WeeklyLoadLimit: 450,
+		MaxSessionLoad: 400, MinRecoveryHours: 6, StrengthDays: 1, Basis: "summer progression",
+	})
+	if err != nil {
+		t.Fatalf("create replacement draft = %v", err)
+	}
+	if _, err = f.planning.PublishPrescription(ctx, f.coach, draft.ID, draft.Version); err != nil {
+		t.Fatalf("publish replacement draft = %v", err)
+	}
+	replacement, err := f.database.PublishedPrescription(ctx, f.athlete.ID, f.prescription.WeekStart)
+	if err != nil {
+		t.Fatalf("published replacement = %v", err)
+	}
+	if replacement.ID != draft.ID {
+		t.Fatalf("replacement not published: got %+v", replacement)
+	}
+}

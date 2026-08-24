@@ -210,9 +210,6 @@ func (s *Service) PublishPrescription(ctx context.Context, actor domain.User, pr
 	if err != nil {
 		return domain.Prescription{}, err
 	}
-	if err = s.store.SupersedePublishedPrescription(ctx, candidate.AthleteID, candidate.WeekStart, now); err != nil {
-		return domain.Prescription{}, err
-	}
 	var prescription domain.Prescription
 	err = s.store.WithTx(ctx, func(tx *store.Tx) error {
 		var err error
@@ -232,6 +229,9 @@ func (s *Service) PublishPrescription(ctx context.Context, actor domain.User, pr
 		}
 		if prescription.Version != expectedVersion {
 			return domain.ErrVersionConflict
+		}
+		if err = tx.SupersedePublishedPrescription(ctx, candidate.AthleteID, candidate.WeekStart, now); err != nil {
+			return err
 		}
 		if err = prescription.Publish(now); err != nil {
 			return err
