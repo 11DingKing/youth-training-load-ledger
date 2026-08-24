@@ -272,6 +272,50 @@ func TestFatigueReportCreatesRiskAndPersistentJob(t *testing.T) {
 	}
 }
 
+func TestFatigueReportRollsBackWhenNotificationQueueRejects(t *testing.T) {
+	f := newWorkflowFixture(t)
+	f.prepareActiveAthlete()
+	ctx := audit.WithRequestID(t.Context(), "fatigue-queue-reject")
+	// Simulate the risk notification queue temporarily rejecting writes.
+	if _, err := f.database.DB().ExecContext(ctx, `DROP TABLE worker_jobs`); err != nil {
+		t.Fatalf("drop worker_jobs: %v", err)
+	}
+	before, err := f.database.AthleteByID(ctx, f.athlete.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = f.risks.SubmitFatigue(ctx, f.student, domain.FatigueReport{
+		AthleteID: f.athlete.ID, ReportedFor: f.now.Now(), FatigueScore: 9,
+		SorenessScore: 7, SleepHours: 4, Notes: "unusually exhausted",
+	})
+	if err == nil {
+		t.Fatal("expected failure when notification queue rejects, got success")
+	}
+	// Caller must see no half-finished risk disposition before retrying.
+	after, err := f.database.AthleteByID(ctx, f.athlete.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != domain.AthleteActive || after.Version != before.Version {
+		t.Fatalf("athlete was partially paused: %+v", after)
+	}
+	risks, err := f.database.ListRisks(ctx, f.athlete.ID, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(risks) != 0 {
+		t.Fatalf("risk case survived failed submission: %+v", risks)
+	}
+	var fatigue int
+	if err = f.database.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM fatigue_reports WHERE athlete_id = ?`,
+		f.athlete.ID).Scan(&fatigue); err != nil {
+		t.Fatal(err)
+	}
+	if fatigue != 0 {
+		t.Fatalf("fatigue report survived failed submission: %d", fatigue)
+	}
+}
+
 func TestProfessionalPermissionsAndVersionConflicts(t *testing.T) {
 	f := newWorkflowFixture(t)
 	f.prepareActiveAthlete()

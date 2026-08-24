@@ -36,7 +36,6 @@ func (s *Service) SubmitFatigue(ctx context.Context, actor domain.User, report d
 		return domain.FatigueReport{}, nil, err
 	}
 	var opened *domain.RiskCase
-	var notification *domain.WorkerJob
 	err = s.store.WithTx(ctx, func(tx *store.Tx) error {
 		created, createErr := tx.CreateFatigue(ctx, report)
 		if createErr != nil {
@@ -71,16 +70,15 @@ func (s *Service) SubmitFatigue(ctx context.Context, actor domain.User, report d
 			job := domain.WorkerJob{Kind: "risk_notification", Payload: string(payload),
 				Status: domain.JobPending, MaxAttempts: 5, AvailableAt: report.CreatedAt,
 				CreatedAt: report.CreatedAt, UpdatedAt: report.CreatedAt}
-			notification = &job
+			if _, createErr = tx.EnqueueJob(ctx, job); createErr != nil {
+				return createErr
+			}
 		}
 		_, createErr = tx.InsertAudit(ctx, domain.AuditEvent{ActorID: actor.ID, Action: "fatigue.submit",
 			ObjectType: "fatigue_report", ObjectID: report.ID, Outcome: "success", RequestID: audit.RequestID(ctx),
 			Metadata: fmt.Sprintf(`{"athlete_id":%d}`, report.AthleteID), CreatedAt: report.CreatedAt})
 		return createErr
 	})
-	if err == nil && notification != nil {
-		_, err = s.store.EnqueueJob(ctx, *notification)
-	}
 	return report, opened, err
 }
 
